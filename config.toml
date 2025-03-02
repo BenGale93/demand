@@ -1,0 +1,19 @@
+[[items]]
+name = "test"
+cost = 1000
+minimum = 100
+count = 100
+
+[[items]]
+name = "test2"
+cost = 1043
+minimum = 100
+count = 100
+
+[[buys]]
+name = "test"
+cost = 1000
+
+[[buys]]
+name = "test"
+cost = 1001

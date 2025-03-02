@@ -1,0 +1,11 @@
+[package]
+name = "demand"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.96"
+clap = { version = "4.5.31", features = ["derive"] }
+serde = { version = "1.0.218", features = ["serde_derive"] }
+thiserror = "2.0.11"
+toml = "0.8.20"
