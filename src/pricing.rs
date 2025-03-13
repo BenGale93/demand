@@ -1,24 +1,33 @@
 use crate::prelude::*;
 
-pub trait Pricer {
-    fn new(items: &[Item]) -> Self;
-
+pub trait Pricer: Send {
     fn price(&mut self, items: &mut [Item]);
 
-    fn update(&mut self, buys: Vec<Buy>);
+    fn update(&mut self, buys: &mut Vec<Buy>);
 }
 
 pub struct SimplePricer {
     last_buy: Option<String>,
 }
 
-impl Pricer for SimplePricer {
-    fn new(_items: &[Item]) -> Self {
+impl SimplePricer {
+    pub const fn new() -> Self {
         Self { last_buy: None }
     }
+}
 
-    fn update(&mut self, mut buys: Vec<Buy>) {
-        self.last_buy = buys.pop().map(|b| b.name);
+impl Default for SimplePricer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Pricer for SimplePricer {
+    fn update(&mut self, buys: &mut Vec<Buy>) {
+        if !buys.is_empty() {
+            self.last_buy = buys.pop().map(|b| b.name);
+            buys.clear();
+        }
     }
 
     fn price(&mut self, items: &mut [Item]) {

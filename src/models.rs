@@ -11,6 +11,15 @@ pub struct Item {
 }
 
 impl Item {
+    pub const fn new(name: String, cost: u64, minimum: u64, count: u64) -> Self {
+        Self {
+            name,
+            cost,
+            minimum,
+            count,
+        }
+    }
+
     #[allow(clippy::missing_const_for_fn)]
     pub fn name(&self) -> &str {
         &self.name

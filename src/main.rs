@@ -1,12 +1,13 @@
 #![warn(clippy::all, clippy::nursery)]
 
-use std::{collections::VecDeque, fs};
-
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use sockets::{connect_to_server, pricer_server};
 
 pub mod error;
 pub mod models;
 pub mod pricing;
+pub mod sockets;
 
 pub mod prelude {
     pub use crate::{error::InternalError, models::*};
@@ -14,29 +15,35 @@ pub mod prelude {
     pub type Result<T> = core::result::Result<T, InternalError>;
 }
 
-use crate::{
-    prelude::*,
-    pricing::{Pricer, SimplePricer},
-};
+use crate::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     items: Vec<Item>,
-    buys: VecDeque<Buy>,
 }
 
-fn main() -> anyhow::Result<()> {
-    let config_content = fs::read_to_string("config.toml")?;
-    let mut config: Config = toml::from_str(&config_content)?;
+#[derive(Parser)]
+#[command(about = "Interact with the demand pricer.")]
+pub struct DemandCli {
+    #[command(subcommand)]
+    pub command: DemandCommands,
+}
 
-    let mut pricer = SimplePricer::new(&config.items);
+#[derive(Subcommand)]
+pub enum DemandCommands {
+    /// Start the pricer server.
+    Start,
+    /// Connect to the pricer server.
+    Connect,
+}
 
-    while let Some(buy) = config.buys.pop_front() {
-        pricer.update(vec![buy]);
-        pricer.price(&mut config.items);
-        for item in &mut config.items {
-            println!("{}", item);
-        }
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = DemandCli::parse();
+    let port = "8080";
+    match cli.command {
+        DemandCommands::Start => pricer_server(port).await?,
+        DemandCommands::Connect => connect_to_server(port).await,
     }
     Ok(())
 }
