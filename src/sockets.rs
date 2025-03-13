@@ -1,32 +1,30 @@
 use std::{
-    collections::HashMap,
     io::Error as IoError,
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
 
-use futures_channel::mpsc::{UnboundedSender, unbounded};
-use futures_util::{StreamExt, future, pin_mut, stream::TryStreamExt};
+use futures_util::{
+    SinkExt, StreamExt,
+    stream::{SplitSink, SplitStream},
+};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncBufReadExt, AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     time,
 };
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
 
 use crate::{
     models::{Buy, Item},
     pricing::{Pricer, SimplePricer},
 };
 
-type Tx = UnboundedSender<Message>;
-type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
 type BuysState = Arc<Mutex<Vec<Buy>>>;
 type PricerState = Arc<Mutex<dyn Pricer>>;
 type ItemState = Arc<Mutex<Vec<Item>>>;
 
 async fn handle_connection(
-    peer_map: PeerMap,
     buys: BuysState,
     items: ItemState,
     raw_stream: TcpStream,
@@ -39,13 +37,14 @@ async fn handle_connection(
         .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", addr);
 
-    // Insert the write part of this peer to the peer map.
-    let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(addr, tx);
+    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    let (outgoing, incoming) = ws_stream.split();
+    while let Some(msg) = ws_receiver.next().await {
+        let msg = msg.unwrap();
+        if msg.is_close() {
+            break;
+        }
 
-    let handle_commands = incoming.try_for_each(|msg| {
         let msg_text = msg.to_text().unwrap();
         println!("Received a message from {}: {}", addr, msg_text);
         if msg_text.contains("buy") {
@@ -62,20 +61,12 @@ async fn handle_connection(
                 .map(|i| format!("{}", i))
                 .collect();
             let item_text = item_text.join(", ");
-            let peers = peer_map.lock().unwrap();
-            let ws_sink = peers.get(&addr).unwrap();
-            ws_sink.unbounded_send(Message::text(item_text)).unwrap();
+            ws_sender
+                .send(Message::Text(item_text.into()))
+                .await
+                .unwrap();
         }
-        future::ok(())
-    });
-
-    let receive_from_others = rx.map(Ok).forward(outgoing);
-
-    pin_mut!(handle_commands, receive_from_others);
-    future::select(handle_commands, receive_from_others).await;
-
-    println!("{} disconnected", &addr);
-    peer_map.lock().unwrap().remove(&addr);
+    }
 }
 
 async fn update_pricer(buys: BuysState, pricer: PricerState) {
@@ -99,7 +90,6 @@ async fn reprice(items: ItemState, pricer: PricerState) {
 pub async fn pricer_server(port: &str) -> Result<(), IoError> {
     let addr = format!("127.0.0.1:{port}");
 
-    let state = PeerMap::new(Mutex::new(HashMap::new()));
     let buys = Arc::new(Mutex::new(vec![]));
     let pricer = Arc::new(Mutex::new(SimplePricer::new()));
     let items = Arc::new(Mutex::new(vec![
@@ -117,13 +107,7 @@ pub async fn pricer_server(port: &str) -> Result<(), IoError> {
 
     // Let's spawn the handling of each connection in a separate task.
     while let Ok((stream, addr)) = listener.accept().await {
-        tokio::spawn(handle_connection(
-            state.clone(),
-            buys.clone(),
-            items.clone(),
-            stream,
-            addr,
-        ));
+        tokio::spawn(handle_connection(buys.clone(), items.clone(), stream, addr));
     }
 
     Ok(())
@@ -132,35 +116,41 @@ pub async fn pricer_server(port: &str) -> Result<(), IoError> {
 pub async fn connect_to_server(port: &str) {
     let url = format!("ws://127.0.0.1:{port}/");
 
-    let (stdin_tx, stdin_rx) = futures_channel::mpsc::unbounded();
-    tokio::spawn(read_stdin(stdin_tx));
-
-    let (ws_stream, _) = connect_async(&url).await.expect("Failed to connect");
-    println!("WebSocket handshake has been successfully completed");
-
+    println!("Connecting to - {}", url);
+    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
     let (write, read) = ws_stream.split();
 
-    let stdin_to_ws = stdin_rx.map(Ok).forward(write);
-    let ws_to_stdout = {
-        read.for_each(|message| async {
-            let data = message.unwrap().into_data();
-            tokio::io::stdout().write_all(&data).await.unwrap();
-        })
-    };
+    // Handle incoming messages in a separate task
+    let read_handle = tokio::spawn(handle_incoming_messages(read));
 
-    pin_mut!(stdin_to_ws, ws_to_stdout);
-    future::select(stdin_to_ws, ws_to_stdout).await;
+    // Read from command line and send messages
+    let write_handle = tokio::spawn(read_and_send_messages(write));
+
+    // Await both tasks (optional, depending on your use case)
+    let _ = tokio::try_join!(read_handle, write_handle);
 }
 
-async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Message>) {
-    let mut stdin = tokio::io::stdin();
-    loop {
-        let mut buf = vec![0; 1024];
-        let n = match stdin.read(&mut buf).await {
-            Err(_) | Ok(0) => break,
-            Ok(n) => n,
-        };
-        buf.truncate(n);
-        tx.unbounded_send(Message::binary(buf)).unwrap();
+async fn handle_incoming_messages(
+    mut read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>,
+) {
+    while let Some(message) = read.next().await {
+        match message {
+            Ok(msg) => println!("{}", msg),
+            Err(e) => eprintln!("Error receiving message: {}", e),
+        }
+    }
+}
+
+async fn read_and_send_messages(
+    mut write: SplitSink<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>, Message>,
+) {
+    let mut reader = io::BufReader::new(io::stdin()).lines();
+    while let Some(line) = reader.next_line().await.expect("Failed to read line") {
+        if !line.trim().is_empty() {
+            write
+                .send(Message::Text(line.into()))
+                .await
+                .expect("Failed to send message");
+        }
     }
 }
