@@ -1,13 +1,16 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use clap::{Parser, Subcommand};
+use connect::connect_to_server;
 use serde::{Deserialize, Serialize};
-use sockets::{connect_to_server, pricer_server};
+use server::pricer_server;
 
+pub mod commands;
+pub mod connect;
 pub mod error;
 pub mod models;
 pub mod pricing;
-pub mod sockets;
+pub mod server;
 
 pub mod prelude {
     pub use crate::{error::InternalError, models::*};

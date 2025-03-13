@@ -4,16 +4,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
-    io::{self, AsyncBufReadExt, AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     time,
 };
-use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::{
     models::{Buy, Item},
@@ -47,24 +43,24 @@ async fn handle_connection(
 
         let msg_text = msg.to_text().unwrap();
         println!("Received a message from {}: {}", addr, msg_text);
-        if msg_text.contains("buy") {
-            buys.lock().unwrap().push(Buy {
-                name: "test1".to_string(),
-                cost: 100,
-            });
-        }
-        if msg_text.contains("view") {
-            let item_text: Vec<_> = items
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|i| format!("{}", i))
-                .collect();
-            let item_text = item_text.join(", ");
-            ws_sender
-                .send(Message::Text(item_text.into()))
-                .await
-                .unwrap();
+        let (_, command) = crate::commands::parse_command(msg_text).unwrap();
+        match command {
+            crate::commands::Command::Buy((name, cost)) => {
+                buys.lock().unwrap().push(Buy { name, cost });
+            }
+            crate::commands::Command::View => {
+                let item_text: Vec<_> = items
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|i| format!("{}", i))
+                    .collect();
+                let item_text = item_text.join(", ");
+                ws_sender
+                    .send(Message::Text(item_text.into()))
+                    .await
+                    .unwrap();
+            }
         }
     }
 }
@@ -111,46 +107,4 @@ pub async fn pricer_server(port: &str) -> Result<(), IoError> {
     }
 
     Ok(())
-}
-
-pub async fn connect_to_server(port: &str) {
-    let url = format!("ws://127.0.0.1:{port}/");
-
-    println!("Connecting to - {}", url);
-    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
-    let (write, read) = ws_stream.split();
-
-    // Handle incoming messages in a separate task
-    let read_handle = tokio::spawn(handle_incoming_messages(read));
-
-    // Read from command line and send messages
-    let write_handle = tokio::spawn(read_and_send_messages(write));
-
-    // Await both tasks (optional, depending on your use case)
-    let _ = tokio::try_join!(read_handle, write_handle);
-}
-
-async fn handle_incoming_messages(
-    mut read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>,
-) {
-    while let Some(message) = read.next().await {
-        match message {
-            Ok(msg) => println!("{}", msg),
-            Err(e) => eprintln!("Error receiving message: {}", e),
-        }
-    }
-}
-
-async fn read_and_send_messages(
-    mut write: SplitSink<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>, Message>,
-) {
-    let mut reader = io::BufReader::new(io::stdin()).lines();
-    while let Some(line) = reader.next_line().await.expect("Failed to read line") {
-        if !line.trim().is_empty() {
-            write
-                .send(Message::Text(line.into()))
-                .await
-                .expect("Failed to send message");
-        }
-    }
 }
