@@ -1,10 +1,6 @@
-use std::{
-    io::Error as IoError,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{io::Error as IoError, net::SocketAddr, sync::Arc};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, lock::Mutex};
 use tokio::{
     net::{TcpListener, TcpStream},
     time,
@@ -43,19 +39,22 @@ async fn handle_connection(
 
         let msg_text = msg.to_text().unwrap();
         println!("Received a message from {}: {}", addr, msg_text);
-        let (_, command) = crate::commands::parse_command(msg_text).unwrap();
+        let Ok((_, command)) = crate::commands::parse_command(msg_text) else {
+            println!("Invalid command");
+            continue;
+        };
         match command {
             crate::commands::Command::Buy((name, cost)) => {
-                buys.lock().unwrap().push(Buy { name, cost });
+                buys.lock().await.push(Buy { name, cost });
             }
             crate::commands::Command::View => {
-                let item_text: Vec<_> = items
-                    .lock()
-                    .unwrap()
+                let items_guard = items.lock().await;
+                let item_text: String = items_guard
                     .iter()
                     .map(|i| format!("{}", i))
-                    .collect();
-                let item_text = item_text.join(", ");
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                drop(items_guard);
                 ws_sender
                     .send(Message::Text(item_text.into()))
                     .await
@@ -69,8 +68,8 @@ async fn update_pricer(buys: BuysState, pricer: PricerState) {
     let mut interval = time::interval(time::Duration::from_secs(2));
     loop {
         interval.tick().await;
-        let mut buy_lock = buys.lock().unwrap();
-        pricer.lock().unwrap().update(&mut buy_lock);
+        let mut buy_lock = buys.lock().await;
+        pricer.lock().await.update(&mut buy_lock);
     }
 }
 
@@ -78,8 +77,8 @@ async fn reprice(items: ItemState, pricer: PricerState) {
     let mut interval = time::interval(time::Duration::from_secs(2));
     loop {
         interval.tick().await;
-        let mut items_lock = items.lock().unwrap();
-        pricer.lock().unwrap().price(&mut items_lock);
+        let mut items_lock = items.lock().await;
+        pricer.lock().await.price(&mut items_lock);
     }
 }
 
