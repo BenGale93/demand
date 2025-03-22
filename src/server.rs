@@ -5,7 +5,10 @@ use tokio::{
     net::{TcpListener, TcpStream},
     time,
 };
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{
+    Message,
+    handshake::server::{ErrorResponse, Request, Response},
+};
 
 use crate::{
     models::{Buy, Item},
@@ -24,12 +27,37 @@ async fn handle_connection(
 ) {
     println!("Incoming TCP connection from: {}", addr);
 
-    let ws_stream = tokio_tungstenite::accept_async(raw_stream)
+    let mut path = None;
+    let callback = |req: &Request, res: Response| -> Result<Response, ErrorResponse> {
+        path = Some(req.uri().path().to_string());
+        Ok(res)
+    };
+
+    let ws_stream = tokio_tungstenite::accept_hdr_async(raw_stream, callback)
         .await
         .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", addr);
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+
+    if path.unwrap().contains("view") {
+        let mut interval = time::interval(time::Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let items_guard = items.lock().await;
+            let item_text: String = items_guard
+                .iter()
+                .map(|i| format!("{}", i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            drop(items_guard);
+            let send_result = ws_sender.send(Message::Text(item_text.into())).await;
+            if send_result.is_err() {
+                println!("Disconnecting: {}", addr);
+                return;
+            }
+        }
+    }
 
     while let Some(msg) = ws_receiver.next().await {
         let msg = msg.unwrap();
@@ -39,28 +67,14 @@ async fn handle_connection(
 
         let msg_text = msg.to_text().unwrap();
         println!("Received a message from {}: {}", addr, msg_text);
-        let Ok((_, command)) = crate::commands::parse_command(msg_text) else {
+        let Ok((_, command)) = crate::commands::parse_buy(msg_text) else {
             println!("Invalid command");
             continue;
         };
-        match command {
-            crate::commands::Command::Buy((name, cost)) => {
-                buys.lock().await.push(Buy { name, cost });
-            }
-            crate::commands::Command::View => {
-                let items_guard = items.lock().await;
-                let item_text: String = items_guard
-                    .iter()
-                    .map(|i| format!("{}", i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                drop(items_guard);
-                ws_sender
-                    .send(Message::Text(item_text.into()))
-                    .await
-                    .unwrap();
-            }
-        }
+        buys.lock().await.push(Buy {
+            name: command.item,
+            cost: command.price,
+        });
     }
 }
 

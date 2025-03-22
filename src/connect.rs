@@ -21,6 +21,16 @@ pub async fn connect_to_server(port: &str) {
     let _ = tokio::try_join!(read_handle, write_handle);
 }
 
+pub async fn view_prices(port: &str) {
+    let url = format!("ws://127.0.0.1:{port}/view");
+
+    println!("Connecting to - {}", url);
+    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+    let (_, read) = ws_stream.split();
+
+    let _ = tokio::try_join!(tokio::spawn(handle_incoming_messages(read)));
+}
+
 async fn handle_incoming_messages(
     mut read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>,
 ) {

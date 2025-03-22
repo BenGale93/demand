@@ -1,7 +1,7 @@
 #![warn(clippy::all, clippy::nursery)]
 
 use clap::{Parser, Subcommand};
-use connect::connect_to_server;
+use connect::{connect_to_server, view_prices};
 use serde::{Deserialize, Serialize};
 use server::pricer_server;
 
@@ -38,6 +38,8 @@ pub enum DemandCommands {
     Start,
     /// Connect to the pricer server.
     Connect,
+    /// View the prices.
+    View,
 }
 
 #[tokio::main]
@@ -47,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         DemandCommands::Start => pricer_server(port).await?,
         DemandCommands::Connect => connect_to_server(port).await,
+        DemandCommands::View => view_prices(port).await,
     }
     Ok(())
 }
